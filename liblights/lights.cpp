@@ -15,14 +15,14 @@
  */
 
 /**
-* @file ligths.cpp
+* @file lights.cpp
 *
 * Handle backlight in AOSP style and forward led notification
 * to the Sony light HAL.
 *
 */
 
-//#define LOG_NDEBUG 0
+#define LOG_NDEBUG 0
 #define LOG_TAG "lights.cm"
 #include <cutils/log.h>
 
@@ -234,6 +234,7 @@ static int lights_set_light_notifications(struct light_device_t* dev,
 	int rv = 0;
 
     ALOGV("%s->%08X->%08X", __FUNCTION__, (uintptr_t)dev, (uintptr_t)(((wrapper_light_device_t*)dev)->vendor));
+	ALOGV("%s state->color=%08X", __FUNCTION__, state->color);
 
     if(!dev)
         return -EINVAL;
@@ -264,6 +265,7 @@ static int lights_set_light_battery(struct light_device_t* dev,
 	int rv = 0;
 
     ALOGV("%s->%08X->%08X", __FUNCTION__, (uintptr_t)dev, (uintptr_t)(((wrapper_light_device_t*)dev)->vendor));
+	ALOGV("%s state->color=%08X", __FUNCTION__, state->color);
 
     if(!dev)
         return -EINVAL;
