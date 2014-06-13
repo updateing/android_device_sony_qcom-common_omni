@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2013, The CyanogenMod Project
+ * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,28 +14,37 @@
  * limitations under the License.
  */
 
-/**
-* @file lights.cpp
-*
-* Handle backlight in AOSP style and forward led notification
-* to the Sony light HAL.
-*
-*/
 
-#define LOG_NDEBUG 0
-#define LOG_TAG "lights.cm"
+// #define LOG_NDEBUG 0
+
 #include <cutils/log.h>
 
+#include <stdint.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <errno.h>
 #include <fcntl.h>
-#include <math.h>
+#include <pthread.h>
 
-#include <utils/threads.h>
-#include <utils/String8.h>
-#include <hardware/hardware.h>
+#ifdef ENABLE_GAMMA_CORRECTION
+#include <math.h>
+#endif 
+
+#include <sys/ioctl.h>
+#include <sys/types.h>
+
 #include <hardware/lights.h>
-#include <cutils/properties.h>
 
 #include "sony_lights.h"
+
+/******************************************************************************/
+
+static pthread_once_t g_init = PTHREAD_ONCE_INIT;
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct light_state_t g_notification;
+static struct light_state_t g_battery;
+static int g_attention = 0;
 
 #ifndef PWR_RED_USE_PATTERN_FILE
 #define PWR_RED_USE_PATTERN_FILE "/sys/class/leds/pwr-red/use_pattern"
@@ -49,120 +58,72 @@
 #define PWR_BLUE_USE_PATTERN_FILE "/sys/class/leds/pwr-blue/use_pattern"
 #endif
 
+#ifndef PWR_RED_BRIGHTNESS_FILE
+#define PWR_RED_BRIGHTNESS_FILE "/sys/class/leds/pwr-red/brightness"
+#endif
+
+#ifndef PWR_GREEN_BRIGHTNESS_FILE
+#define PWR_GREEN_BRIGHTNESS_FILE "/sys/class/leds/pwr-green/brightness"
+#endif
+
+#ifndef PWR_BLUE_BRIGHTNESS_FILE
+#define PWR_BLUE_BRIGHTNESS_FILE "/sys/class/leds/pwr-blue/brightness"
+#endif
+
 #ifndef PATTERN_DATA_FILE
 #define PATTERN_DATA_FILE "/sys/bus/i2c/devices/10-0040/pattern_data"
 #endif
 
-static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+#ifndef PATTERN_USE_SOFTDIM_FILE
+#define PATTERN_USE_SOFTDIM_FILE "/sys/bus/i2c/devices/10-0040/pattern_use_softdim"
+#endif
 
-static android::Mutex gLightWrapperLock;
-static hw_module_t *gVendorModule = 0;
+#ifndef PATTERN_DURATION_SECS_FILE
+#define PATTERN_DURATION_SECS_FILE "/sys/bus/i2c/devices/10-0040/pattern_duration_secs"
+#endif
 
-static int open_lights(const hw_module_t* module, const char* name,
-                       hw_device_t** device);
-static int lights_device_close(hw_device_t* device);
-static int lights_set_light(struct light_device_t* dev,
-                            struct light_state_t const* state);
+#ifndef PATTERN_DELAY_FILE
+#define PATTERN_DELAY_FILE "/sys/bus/i2c/devices/10-0040/pattern_delay"
+#endif
 
-struct hw_module_methods_t lights_module_methods = {
-    open: open_lights,
-};
+#ifndef DIM_TIME_FILE
+#define DIM_TIME_FILE "/sys/bus/i2c/devices/10-0040/dim_time"
+#endif
 
-hw_module_t HAL_MODULE_INFO_SYM = {
-    tag: HARDWARE_MODULE_TAG,
-    version_major: 1,
-    version_minor: 0,
-    id: LIGHTS_HARDWARE_MODULE_ID,
-    name: "Xperia Lights Wrapper",
-    author: "The CyanogenMod Project",
-    methods: &lights_module_methods,
-    dso: NULL,
-    reserved: {0},
-};
+/**
+ * device methods
+ */
 
-typedef struct wrapper_light_device {
-    light_device_t base;
-    light_device_t *vendor;
-} wrapper_light_device_t;
-
-#define VENDOR_CALL(dev, func, ...) ({ \
-    wrapper_light_device_t *__wrapper_dev = (wrapper_light_device_t*) dev; \
-    __wrapper_dev->vendor->func(__wrapper_dev->vendor, ##__VA_ARGS__); \
-})
-
-int is_notif_led_running = 0;
-
-static int check_vendor_module()
+void init_globals(void)
 {
-    int rv = 0;
-    ALOGV("[%s]", __FUNCTION__);
-
-    if (gVendorModule)
-        return 0;
-
-    rv = hw_get_module_by_class("lights", "vendor", (const hw_module_t **)&gVendorModule);
-    if (rv)
-        ALOGE("failed to open vendor light module");
-
-    return rv;
+    // init the mutex
+    pthread_mutex_init(&g_lock, NULL);
 }
 
-static int lights_set_light(struct light_device_t* dev,
-                     struct light_state_t const* state)
+static int
+write_int(char const* path, int value)
 {
-    ALOGV("%s->%08X->%08X", __FUNCTION__, (uintptr_t)dev, (uintptr_t)(((wrapper_light_device_t*)dev)->vendor));
-
-    if(!dev)
-        return -EINVAL;
-
-    return VENDOR_CALL(dev, set_light, state);
-}
-
-static int lights_device_close(hw_device_t* device)
-{
-    int ret = 0;
-    wrapper_light_device_t *wrapper_dev = NULL;
-
-    ALOGV("[%s]", __FUNCTION__);
-
-    android::Mutex::Autolock lock(gLightWrapperLock);
-
-    if (!device) {
-        ret = -EINVAL;
-        goto done;
-    }
-
-    wrapper_dev = (wrapper_light_device_t*) device;
-
-    wrapper_dev->vendor->common.close((hw_device_t*)wrapper_dev->vendor);
-    free(wrapper_dev);
-
-done:
-    return ret;
-}
-
-static int write_int (const char *path, int value) {
     int fd;
     static int already_warned = 0;
 
     fd = open(path, O_RDWR);
-    if (fd < 0) {
+    if (fd >= 0) {
+        char buffer[20];
+        int bytes = sprintf(buffer, "%d\n", value);
+        int amt = write(fd, buffer, bytes);
+        close(fd);
+        return amt == -1 ? -errno : 0;
+    } else {
         if (already_warned == 0) {
             ALOGE("write_int failed to open %s\n", path);
-                already_warned = 1;
+            already_warned = 1;
         }
         return -errno;
     }
-
-    char buffer[20];
-    int bytes = snprintf(buffer, sizeof(buffer), "%d\n", value);
-    int written = write (fd, buffer, bytes);
-    close(fd);
-
-    return written == -1 ? -errno : 0;
 }
 
-static int write_string (const char *path, const char *value) {
+static int
+write_string (const char *path, const char *value) {
     int fd;
     static int already_warned = 0;
 
@@ -183,27 +144,37 @@ static int write_string (const char *path, const char *value) {
     return written == -1 ? -errno : 0;
 }
 
-static int rgb_to_brightness (struct light_state_t const* state) {
+static int
+is_lit(struct light_state_t const* state)
+{
+    return state->color & 0x00ffffff;
+}
+
+static int
+rgb_to_brightness(struct light_state_t const* state)
+{
     int color = state->color & 0x00ffffff;
     return ((77*((color>>16)&0x00ff))
             + (150*((color>>8)&0x00ff)) + (29*(color&0x00ff))) >> 8;
 }
 
 #ifdef ENABLE_GAMMA_CORRECTION
-static int brightness_apply_gamma (int brightness) {
+static int
+brightness_apply_gamma (int brightness) {
     double floatbrt = (double) brightness;
     floatbrt /= 255.0;
-    ALOGV("%s: brightness = %d, floatbrt = %f", __FUNCTION__, brightness, floatbrt);
+    // ALOGV("%s: brightness = %d, floatbrt = %f", __FUNCTION__, brightness, floatbrt);
     floatbrt = pow(floatbrt, 2.2);
-    ALOGV("%s: gamma corrected floatbrt = %f", __FUNCTION__, floatbrt);
+    // ALOGV("%s: gamma corrected floatbrt = %f", __FUNCTION__, floatbrt);
     floatbrt *= 255.0;
     brightness = (int) floatbrt;
-    ALOGV("%s: gamma corrected brightness = %d", __FUNCTION__, brightness);
+    // ALOGV("%s: gamma corrected brightness = %d", __FUNCTION__, brightness);
     return brightness;
 }
 #endif
 
-static int get_max_brightness() {
+static int
+get_max_brightness() {
     char value[6];
     int fd, len, max_brightness;
 
@@ -228,63 +199,10 @@ static int get_max_brightness() {
     return (unsigned int) max_brightness;
 }
 
-static int lights_set_light_notifications(struct light_device_t* dev,
-                     struct light_state_t const* state)
+static int
+set_light_backlight(struct light_device_t* dev,
+        struct light_state_t const* state)
 {
-	int rv = 0;
-
-    ALOGV("%s->%08X->%08X", __FUNCTION__, (uintptr_t)dev, (uintptr_t)(((wrapper_light_device_t*)dev)->vendor));
-	ALOGV("%s state->color=%08X", __FUNCTION__, state->color);
-
-    if(!dev)
-        return -EINVAL;
-
-    rv = VENDOR_CALL(dev, set_light, state);
-
-	/* If notification led needs to be turned off, we reset use_pattern and pattern_data
-	 * to avoid conflict between the previous pattern data and battery led.
-     * When a new notif arrives, HAL will set these files to 1 automatically.
-     * But HAL seems to forget setting them to 0 when notif is cleared. */
-	if (0 == (state->color & 0x00ffffff)) {
-		ALOGV("%s setting use_pattern to 0", __FUNCTION__);
-		write_int(PWR_RED_USE_PATTERN_FILE, 0);
-		write_int(PWR_GREEN_USE_PATTERN_FILE, 0);
-		write_int(PWR_BLUE_USE_PATTERN_FILE, 0);
-		write_int(PATTERN_DATA_FILE, 0);
-		is_notif_led_running = 0;
-	} else {
-		is_notif_led_running = 1;
-	}
-
-	return rv;
-}
-
-static int lights_set_light_battery(struct light_device_t* dev,
-                     struct light_state_t const* state)
-{
-	int rv = 0;
-
-    ALOGV("%s->%08X->%08X", __FUNCTION__, (uintptr_t)dev, (uintptr_t)(((wrapper_light_device_t*)dev)->vendor));
-	ALOGV("%s state->color=%08X", __FUNCTION__, state->color);
-
-    if(!dev)
-        return -EINVAL;
-
-    rv = VENDOR_CALL(dev, set_light, state);
-
-	/* if battery led is about to light up and no notif is present */
-	if ((0 != (state->color & 0x00ffffff)) && (is_notif_led_running == 0)) {
-		ALOGV("%s setting use_pattern files to 0", __FUNCTION__);
-		write_int(PWR_RED_USE_PATTERN_FILE, 0);
-		write_int(PWR_GREEN_USE_PATTERN_FILE, 0);
-		write_int(PWR_BLUE_USE_PATTERN_FILE, 0);
-		write_int(PATTERN_DATA_FILE, 0);
-	}
-
-	return rv;
-}
-
-static int lights_set_light_backlight (struct light_device_t *dev, struct light_state_t const *state) {
     int err = 0;
     int brightness = rgb_to_brightness(state);
     int max_brightness = get_max_brightness();
@@ -296,6 +214,11 @@ static int lights_set_light_backlight (struct light_device_t *dev, struct light_
         brightness = max_brightness * brightness / 255;
         if (brightness < LCD_BRIGHTNESS_MIN)
             brightness = LCD_BRIGHTNESS_MIN;
+
+#ifdef DEVICE_HAYABUSA
+        write_int(LOGO_BACKLIGHT_PATTERN_FILE, 0);        
+        write_int(LOGO_BACKLIGHT2_PATTERN_FILE, 0);
+#endif
     }
 
     ALOGV("[%s] brightness %d max_brightness %d", __FUNCTION__, brightness, max_brightness);
@@ -312,69 +235,243 @@ static int lights_set_light_backlight (struct light_device_t *dev, struct light_
     return err;
 }
 
-static int open_lights(const hw_module_t* module, const char* name,
-                       hw_device_t** device)
+static void
+clear_lights_locked()
 {
-    int rv = 0;
-    int (*set_light)(struct light_device_t* dev,
-                     struct light_state_t const* state);
-
-    wrapper_light_device_t* light_device = NULL;
-
-    android::Mutex::Autolock lock(gLightWrapperLock);
-
-    ALOGV("lights device open");
-
-    if (name != NULL) {
-        if (check_vendor_module())
-            return -EINVAL;
-
-        light_device = (wrapper_light_device_t*)malloc(sizeof(*light_device));
-        if (!light_device) {
-            ALOGE("light_device allocation fail");
-            rv = -ENOMEM;
-            goto fail;
-        }
-        memset(light_device, 0, sizeof(*light_device));
-
-        if (rv = gVendorModule->methods->open((const hw_module_t*)gVendorModule, name, (hw_device_t**)&(light_device->vendor))) {
-            ALOGE("vendor light open fail");
-            goto fail;
-        }
-        ALOGV("[%s]: got vendor light device 0x%08X", __FUNCTION__, (uintptr_t)(light_device->vendor));
-
-        if (0 == strcmp(LIGHT_ID_BACKLIGHT, name))
-            set_light = lights_set_light_backlight;
-        else if (0 == strcmp(LIGHT_ID_BUTTONS, name))
-            set_light = lights_set_light;
-        else if (0 == strcmp(LIGHT_ID_BATTERY, name))
-            set_light = lights_set_light_battery;
-        else if (0 == strcmp(LIGHT_ID_NOTIFICATIONS, name))
-            set_light = lights_set_light_notifications;
-/* LIGHT_ID_ATTENTION is not supported by Sony HAL
-        else if (0 == strcmp(LIGHT_ID_ATTENTION, name))
-            set_light = lights_set_light;
-*/
-        else
-            return -EINVAL;
-
-        light_device->base.common.tag     = HARDWARE_DEVICE_TAG;
-        light_device->base.common.version = 0;
-        light_device->base.common.module  = (hw_module_t *)(module);
-        light_device->base.common.close   = lights_device_close;
-        light_device->base.set_light      = set_light;
-
-        *device = (struct hw_device_t*)light_device;
-    }
-
-    return rv;
-
-fail:
-    if (light_device) {
-        free(light_device);
-        light_device = NULL;
-    }
-    *device = NULL;
-
-    return rv;
+    write_string(PATTERN_DATA_FILE, "0");
+    write_int(PATTERN_USE_SOFTDIM_FILE, 0);
+    write_int(PATTERN_DURATION_SECS_FILE, 1);
+    write_int(PATTERN_DELAY_FILE, 1);
+    write_int(DIM_TIME_FILE, 500);
+    write_int(PWR_RED_BRIGHTNESS_FILE, 0);
+    write_int(PWR_RED_USE_PATTERN_FILE, 0);
+    write_int(PWR_GREEN_BRIGHTNESS_FILE, 0);
+    write_int(PWR_GREEN_USE_PATTERN_FILE, 0);
+    write_int(PWR_BLUE_BRIGHTNESS_FILE, 0);
+    write_int(PWR_BLUE_USE_PATTERN_FILE, 0);
+#ifdef DEVICE_HAYABUSA
+    write_int(LOGO_BACKLIGHT_PATTERN_FILE, 0);        
+    write_int(LOGO_BACKLIGHT2_PATTERN_FILE, 0);
+    // write_int(LOGO_BACKLIGHT_FILE, 0);
+    // write_int(LOGO_BACKLIGHT2_FILE, 0);
+#endif
 }
+
+static int
+get_dim_time(int offMS)
+{
+    if (offMS > 500) return 500;
+    else if (offMS > 190) return 190;
+    else if (offMS > 95) return 95;
+    else if (offMS > 50) return 50;
+    else return 50;
+}
+
+static void
+pattern_data_on_bit(double duration, int onMS, int offMS, int *data)
+{
+    int cycle = (int)(duration / (onMS + offMS) + 0.5);
+    if (cycle == 0) cycle = 1;
+
+    int now_cycle = 0;
+    int s = 0;
+    int bit = 0;
+
+    for (bit = 0; bit < 32; ++bit) {
+        for (now_cycle = 0; now_cycle < cycle; ++now_cycle) {
+            s = duration / 32 * bit - now_cycle * (onMS + offMS);
+            if (s >= 0 && s < onMS)
+                *data |= 1 << bit;
+        }
+    }
+}
+
+static int
+set_speaker_light_locked(struct light_device_t* dev,
+        struct light_state_t const* state)
+{
+    int alpha, red, green, blue;
+    int onMS, offMS;
+    int pattern_duration = 1, pattern_dim_time = 50, pattern_data_dec = 0, pattern_delay = 0, pattern_use_softdim = 0;
+    unsigned int colorRGB;
+    char pattern_data[11];
+
+    switch (state->flashMode) {
+        case LIGHT_FLASH_TIMED:
+            onMS = state->flashOnMS;
+            offMS = state->flashOffMS;
+            break;
+        case LIGHT_FLASH_NONE:
+        default:
+            onMS = 0;
+            offMS = 0;
+            break;
+    }
+
+    colorRGB = state->color;
+
+#if 0
+    ALOGD("set_speaker_light_locked mode %d, colorRGB=%08X, onMS=%d, offMS=%d\n",
+            state->flashMode, colorRGB, onMS, offMS);
+#endif
+
+    red = (colorRGB >> 16) & 0xFF;
+    green = (colorRGB >> 8) & 0xFF;
+    blue = colorRGB & 0xFF;
+
+    if (onMS > 0 && offMS > 0) {
+        if (onMS + offMS > 15000) {
+            if (onMS > 8000) onMS = 8000;
+            if (offMS > 15000 - onMS) offMS = 15000 - onMS;
+        }
+
+        int totalMS = onMS + offMS;
+
+        if (totalMS < 8000 && onMS <= 1000) {
+            pattern_duration = 1;
+            pattern_dim_time = get_dim_time(offMS);
+            pattern_data_on_bit(1000.0, onMS, offMS, &pattern_data_dec);
+            pattern_delay = totalMS - 1000 < 1000 ? 0 : (totalMS - 1000) / 1000;
+        } else {
+            pattern_duration = 8;
+            pattern_dim_time = get_dim_time(offMS);
+            pattern_data_on_bit(8000.0, onMS, offMS, &pattern_data_dec);
+            pattern_delay = totalMS - 8000 < 8000 ? 0 : (totalMS - 8000) / 1000;
+        }
+
+        pattern_use_softdim = 1;
+    } else {
+        pattern_use_softdim = 0;
+        pattern_data_dec = 0;
+    }
+
+    snprintf(pattern_data, 11, "0x%X", pattern_data_dec);
+
+    clear_lights_locked();
+
+    if (pattern_use_softdim) {
+        write_string(PATTERN_DATA_FILE, pattern_data);
+        write_int(PATTERN_USE_SOFTDIM_FILE, pattern_use_softdim);
+        write_int(PATTERN_DURATION_SECS_FILE, pattern_duration);
+        write_int(PATTERN_DELAY_FILE, pattern_delay);
+        write_int(DIM_TIME_FILE, pattern_dim_time);
+        write_int(PWR_RED_BRIGHTNESS_FILE, red);
+        write_int(PWR_RED_USE_PATTERN_FILE, 1);
+        write_int(PWR_GREEN_BRIGHTNESS_FILE, green);
+        write_int(PWR_GREEN_USE_PATTERN_FILE, 1);
+        write_int(PWR_BLUE_BRIGHTNESS_FILE, blue);
+        write_int(PWR_BLUE_USE_PATTERN_FILE, 1);
+#ifdef DEVICE_HAYABUSA
+        write_int(LOGO_BACKLIGHT_FILE, 255);
+        write_int(LOGO_BACKLIGHT2_FILE, 255);
+        write_int(LOGO_BACKLIGHT_PATTERN_FILE, 1);        
+        write_int(LOGO_BACKLIGHT2_PATTERN_FILE, 1);
+#endif
+    } else {
+        write_int(PWR_RED_BRIGHTNESS_FILE, red);
+        write_int(PWR_GREEN_BRIGHTNESS_FILE, green);
+        write_int(PWR_BLUE_BRIGHTNESS_FILE, blue);
+    }
+
+    return 0;
+}
+
+static void
+handle_speaker_battery_locked(struct light_device_t* dev)
+{
+    if (is_lit(&g_notification))
+        set_speaker_light_locked(dev, &g_notification);
+    else if(is_lit(&g_battery))
+        set_speaker_light_locked(dev, &g_battery);
+    else
+        clear_lights_locked();
+}
+
+static int
+set_light_notifications(struct light_device_t* dev,
+        struct light_state_t const* state)
+{
+    pthread_mutex_lock(&g_lock);
+    g_notification = *state;
+    handle_speaker_battery_locked(dev);
+    pthread_mutex_unlock(&g_lock);
+    return 0;
+}
+
+static int
+set_light_battery(struct light_device_t* dev,
+        struct light_state_t const* state)
+{
+    pthread_mutex_lock(&g_lock);
+    g_battery = *state;
+    handle_speaker_battery_locked(dev);
+    pthread_mutex_unlock(&g_lock);
+    return 0;
+}
+
+
+/** Close the lights device */
+static int
+close_lights(struct light_device_t *dev)
+{
+    if (dev) {
+        free(dev);
+    }
+    return 0;
+}
+
+
+/******************************************************************************/
+
+/**
+ * module methods
+ */
+
+/** Open a new instance of a lights device using name */
+static int open_lights(const struct hw_module_t* module, char const* name,
+        struct hw_device_t** device)
+{
+    int (*set_light)(struct light_device_t* dev,
+            struct light_state_t const* state);
+
+    // There are no attention LED or button backlight in Sony blue devices
+    if (0 == strcmp(LIGHT_ID_BACKLIGHT, name))
+        set_light = set_light_backlight;
+    else if (0 == strcmp(LIGHT_ID_NOTIFICATIONS, name))
+        set_light = set_light_notifications;
+    else if (0 == strcmp(LIGHT_ID_BATTERY, name))
+        set_light = set_light_battery;
+    else
+        return -EINVAL;
+
+    pthread_once(&g_init, init_globals);
+
+    struct light_device_t *dev = (light_device_t*)malloc(sizeof(struct light_device_t));
+    memset(dev, 0, sizeof(*dev));
+
+    dev->common.tag = HARDWARE_DEVICE_TAG;
+    dev->common.version = 0;
+    dev->common.module = (struct hw_module_t*)module;
+    dev->common.close = (int (*)(struct hw_device_t*))close_lights;
+    dev->set_light = set_light;
+
+    *device = (struct hw_device_t*)dev;
+    return 0;
+}
+
+static struct hw_module_methods_t lights_module_methods = {
+    .open =  open_lights,
+};
+
+/*
+ * The lights Module
+ */
+struct hw_module_t HAL_MODULE_INFO_SYM = {
+    .tag = HARDWARE_MODULE_TAG,
+    .version_major = 1,
+    .version_minor = 0,
+    .id = LIGHTS_HARDWARE_MODULE_ID,
+    .name = "Sony Lights Module for Blue devices",
+    .author = "Hamster Tian",
+    .methods = &lights_module_methods,
+};
