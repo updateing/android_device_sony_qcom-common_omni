@@ -20,4 +20,4 @@ PRODUCT_PROPERTY_OVERRIDES += \
     debug.composition.type=c2d
 
 # Include non-opensource parts
-$(call inherit-product, vendor/sony/qcom-common/qcom-common-vendor-330.mk)
+$(call inherit-product, vendor/sony/qcom-common/qcom-common-vendor.mk)
