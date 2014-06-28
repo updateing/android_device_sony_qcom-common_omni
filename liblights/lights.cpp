@@ -15,7 +15,8 @@
  */
 
 
-// #define LOG_NDEBUG 0
+#define LOG_NDEBUG 0
+#define LOG_PARAM
 
 #include <cutils/log.h>
 
@@ -236,7 +237,7 @@ set_light_backlight(struct light_device_t* dev,
 }
 
 static void
-clear_lights_locked()
+clear_lights_locked(int clear_logo)
 {
     write_string(PATTERN_DATA_FILE, "0");
     write_int(PATTERN_USE_SOFTDIM_FILE, 0);
@@ -252,8 +253,10 @@ clear_lights_locked()
 #ifdef DEVICE_HAYABUSA
     write_int(LOGO_BACKLIGHT_PATTERN_FILE, 0);        
     write_int(LOGO_BACKLIGHT2_PATTERN_FILE, 0);
-    // write_int(LOGO_BACKLIGHT_FILE, 0);
-    // write_int(LOGO_BACKLIGHT2_FILE, 0);
+    if (clear_logo) {
+        write_int(LOGO_BACKLIGHT_FILE, 0);
+        write_int(LOGO_BACKLIGHT2_FILE, 0);
+    }
 #endif
 }
 
@@ -310,7 +313,7 @@ set_speaker_light_locked(struct light_device_t* dev,
 
     colorRGB = state->color;
 
-#if 0
+#ifdef LOG_PARAM
     ALOGD("set_speaker_light_locked mode %d, colorRGB=%08X, onMS=%d, offMS=%d\n",
             state->flashMode, colorRGB, onMS, offMS);
 #endif
@@ -329,14 +332,20 @@ set_speaker_light_locked(struct light_device_t* dev,
 
         if (totalMS < 8000 && onMS <= 1000) {
             pattern_duration = 1;
-            pattern_dim_time = get_dim_time(offMS);
+            pattern_dim_time = get_dim_time(offMS > onMS ? onMS : offMS);
             pattern_data_on_bit(1000.0, onMS, offMS, &pattern_data_dec);
-            pattern_delay = totalMS - 1000 < 1000 ? 0 : (totalMS - 1000) / 1000;
+            pattern_delay = totalMS - 1000 < 1000 ? (offMS > 3 * onMS ? 1 : 0) : (totalMS - 1000) / 1000;
+            // When the duration is 1s and offMS is 3 times longer than onMS, (eg on 300ms, off 1000ms)
+            // if we only use pattern_data to describe the off milliseconds (700ms)
+            // the off time will appear too short (although 700ms is more close to desired 1000ms than +1s delay)
+            // So we force 1s delay in such cases.
         } else {
             pattern_duration = 8;
-            pattern_dim_time = get_dim_time(offMS);
+            pattern_dim_time = get_dim_time(offMS > onMS ? onMS : offMS);
             pattern_data_on_bit(8000.0, onMS, offMS, &pattern_data_dec);
             pattern_delay = totalMS - 8000 < 8000 ? 0 : (totalMS - 8000) / 1000;
+            // The above trick is not needed here since it won't make much visible difference
+            // when offMS > 3 * onMS here.
         }
 
         pattern_use_softdim = 1;
@@ -347,7 +356,12 @@ set_speaker_light_locked(struct light_device_t* dev,
 
     snprintf(pattern_data, 11, "0x%X", pattern_data_dec);
 
-    clear_lights_locked();
+    clear_lights_locked(0);
+
+#ifdef LOG_PARAM
+    ALOGD("set_speaker_light_locked About to write: _data=%s, _usesoftdim=%d, _duration=%d, _delay=%d, _dimtime=%d\n",
+            pattern_data, pattern_use_softdim, pattern_duration, pattern_delay, pattern_dim_time);
+#endif
 
     if (pattern_use_softdim) {
         write_string(PATTERN_DATA_FILE, pattern_data);
@@ -384,7 +398,8 @@ handle_speaker_battery_locked(struct light_device_t* dev)
     else if(is_lit(&g_battery))
         set_speaker_light_locked(dev, &g_battery);
     else
-        clear_lights_locked();
+        // No light required. Clear logo backlight.
+        clear_lights_locked(1);
 }
 
 static int
