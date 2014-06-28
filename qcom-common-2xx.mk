@@ -17,4 +17,4 @@ USE_ADRENO_2XX := true
 $(call inherit-product, device/sony/qcom-common/qcom-common.mk)
 
 # Include non-opensource parts
-$(call inherit-product, vendor/sony/qcom-common/qcom-common-vendor.mk)
+$(call inherit-product, vendor/sony/qcom-common/qcom-common-vendor-2xx.mk)
