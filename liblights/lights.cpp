@@ -91,7 +91,7 @@ static int g_attention = 0;
 #define DIM_TIME_FILE "/sys/bus/i2c/devices/10-0040/dim_time"
 #endif
 
-int is_screen_on = 1;
+int is_screen_off = 0;
 
 /**
  * device methods
@@ -222,9 +222,9 @@ set_light_backlight(struct light_device_t* dev,
         write_int(LOGO_BACKLIGHT_PATTERN_FILE, 0);        
         write_int(LOGO_BACKLIGHT2_PATTERN_FILE, 0);
 #endif
-        is_screen_on = 1;
+        is_screen_off = 0;
     } else {
-        is_screen_on = 0;
+        is_screen_off = 1;
     }
 
     ALOGV("[%s] brightness %d max_brightness %d", __FUNCTION__, brightness, max_brightness);
@@ -258,7 +258,7 @@ clear_lights_locked(int clear_logo)
 #ifdef DEVICE_HAYABUSA
     write_int(LOGO_BACKLIGHT_PATTERN_FILE, 0);        
     write_int(LOGO_BACKLIGHT2_PATTERN_FILE, 0);
-    if (clear_logo && (!is_screen_on)) {
+    if (clear_logo && is_screen_off) {
         write_int(LOGO_BACKLIGHT_FILE, 0);
         write_int(LOGO_BACKLIGHT2_FILE, 0);
     }
