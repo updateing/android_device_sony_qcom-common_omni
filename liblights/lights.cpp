@@ -17,6 +17,7 @@
 
 #define LOG_NDEBUG 0
 #define LOG_PARAM
+#define LOG_TAG "Sony Lights HAL Opensource"
 
 #include <cutils/log.h>
 
@@ -219,8 +220,11 @@ set_light_backlight(struct light_device_t* dev,
             brightness = LCD_BRIGHTNESS_MIN;
 
 #ifdef DEVICE_HAYABUSA
-        write_int(LOGO_BACKLIGHT_PATTERN_FILE, 0);        
-        write_int(LOGO_BACKLIGHT2_PATTERN_FILE, 0);
+        if (is_screen_off) {
+            // no need to set this repeatedly when screen is already on
+            write_int(LOGO_BACKLIGHT_PATTERN_FILE, 0);
+            write_int(LOGO_BACKLIGHT2_PATTERN_FILE, 0);
+        }
 #endif
         is_screen_off = 0;
     } else {
@@ -259,9 +263,11 @@ clear_lights_locked(int clear_logo)
     write_int(LOGO_BACKLIGHT_PATTERN_FILE, 0);        
     write_int(LOGO_BACKLIGHT2_PATTERN_FILE, 0);
     if (clear_logo && is_screen_off) {
+        ALOGV("Clear logo, is_screen_off=%d", is_screen_off);
         write_int(LOGO_BACKLIGHT_FILE, 0);
         write_int(LOGO_BACKLIGHT2_FILE, 0);
     }
+    ALOGV("is_screen_off=%d", is_screen_off);
 #endif
 }
 
