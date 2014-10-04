@@ -322,11 +322,13 @@ set_speaker_light_locked(struct light_device_t* dev,
         case LIGHT_FLASH_TIMED:
             onMS = state->flashOnMS;
             offMS = state->flashOffMS;
+            pattern_use_softdim = 1;
             break;
         case LIGHT_FLASH_NONE:
         default:
             onMS = 0;
             offMS = 0;
+            pattern_use_softdim = 0;
             break;
     }
 
@@ -366,10 +368,7 @@ set_speaker_light_locked(struct light_device_t* dev,
             // The above trick is not needed here since it won't make much visible difference
             // when offMS > 3 * onMS here.
         }
-
-        pattern_use_softdim = 1;
     } else {
-        pattern_use_softdim = 0;
         pattern_data_dec = 0;
     }
 
