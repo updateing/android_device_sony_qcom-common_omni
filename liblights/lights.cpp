@@ -17,6 +17,7 @@
 
 #define LOG_NDEBUG 0
 #define LOG_PARAM
+//#define LOG_BRIGHTNESS
 #define LOG_TAG "Sony Lights HAL Opensource"
 
 #include <cutils/log.h>
@@ -39,14 +40,6 @@
 #include <hardware/lights.h>
 
 #include "sony_lights.h"
-
-/******************************************************************************/
-
-static pthread_once_t g_init = PTHREAD_ONCE_INIT;
-static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct light_state_t g_notification;
-static struct light_state_t g_battery;
-static int g_attention = 0;
 
 #ifndef PWR_RED_USE_PATTERN_FILE
 #define PWR_RED_USE_PATTERN_FILE "/sys/class/leds/pwr-red/use_pattern"
@@ -92,6 +85,13 @@ static int g_attention = 0;
 #define DIM_TIME_FILE "/sys/bus/i2c/devices/10-0040/dim_time"
 #endif
 
+/******************************************************************************/
+
+static pthread_once_t g_init = PTHREAD_ONCE_INIT;
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct light_state_t g_notification;
+static struct light_state_t g_battery;
+static int g_attention = 0;
 int is_screen_off = 0;
 
 /**
@@ -167,12 +167,18 @@ static int
 brightness_apply_gamma (int brightness) {
     double floatbrt = (double) brightness;
     floatbrt /= 255.0;
-    // ALOGV("%s: brightness = %d, floatbrt = %f", __FUNCTION__, brightness, floatbrt);
+#ifdef LOG_BRIGHTNESS
+    ALOGV("%s: brightness = %d, floatbrt = %f", __FUNCTION__, brightness, floatbrt);
+#endif
     floatbrt = pow(floatbrt, 2.2);
-    // ALOGV("%s: gamma corrected floatbrt = %f", __FUNCTION__, floatbrt);
+#ifdef LOG_BRIGHTNESS
+    ALOGV("%s: gamma corrected floatbrt = %f", __FUNCTION__, floatbrt);
+#endif
     floatbrt *= 255.0;
     brightness = (int) floatbrt;
-    // ALOGV("%s: gamma corrected brightness = %d", __FUNCTION__, brightness);
+#ifdef LOG_BRIGHTNESS
+    ALOGV("%s: gamma corrected brightness = %d", __FUNCTION__, brightness);
+#endif
     return brightness;
 }
 #endif
@@ -231,7 +237,9 @@ set_light_backlight(struct light_device_t* dev,
         is_screen_off = 1;
     }
 
+#ifdef LOG_BRIGHTNESS
     ALOGV("[%s] brightness %d max_brightness %d", __FUNCTION__, brightness, max_brightness);
+#endif
 
     pthread_mutex_lock(&g_lock);
     err |= write_int (LCD_BACKLIGHT_FILE, brightness);
