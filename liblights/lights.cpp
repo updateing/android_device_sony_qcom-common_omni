@@ -505,6 +505,8 @@ struct hw_module_t HAL_MODULE_INFO_SYM = {
     .version_minor = 0,
     .id = LIGHTS_HARDWARE_MODULE_ID,
     .name = "Sony Lights Module for Blue devices",
-    .author = "Hamster Tian",
+    .author = "Google, Hamster Tian",
     .methods = &lights_module_methods,
+    .dso = NULL, /* remove compilation warnings */
+    .reserved = {0}, /* remove compilation warnings */
 };
