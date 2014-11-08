@@ -21,11 +21,11 @@
 
 #include <hardware_legacy/power.h>
 
-#include <telephony/ril.h>
-#include <telephony/ril_cdma_sms.h>
+#include "telephony/ril.h"
+#include "telephony/ril_cdma_sms.h"
 #include <cutils/sockets.h>
 #include <cutils/jstring.h>
-#include <telephony/record_stream.h>
+#include "telephony/record_stream.h"
 #include <utils/Log.h>
 #include <utils/SystemClock.h>
 #include <pthread.h>
