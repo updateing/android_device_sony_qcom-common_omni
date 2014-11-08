@@ -2388,7 +2388,7 @@ static int responseRilSignalStrength(Parcel &p,
     }
 
     if (responselen >= sizeof (RIL_SignalStrength_v5)) {
-        RIL_SignalStrength_v9_CAF *p_cur = ((RIL_SignalStrength_v9_CAF *) response);
+        RIL_SignalStrength_v10 *p_cur = ((RIL_SignalStrength_v10 *) response);
 
         p.writeInt32(p_cur->GW_SignalStrength.signalStrength);
         p.writeInt32(p_cur->GW_SignalStrength.bitErrorRate);
@@ -2431,7 +2431,7 @@ static int responseRilSignalStrength(Parcel &p,
             p.writeInt32(p_cur->LTE_SignalStrength.cqi);
             if (responselen >= sizeof (RIL_SignalStrength_v8)) {
                 p.writeInt32(p_cur->LTE_SignalStrength.timingAdvance);
-                if (responselen >= sizeof (RIL_SignalStrength_v9_CAF)) {
+                if (responselen >= sizeof (RIL_SignalStrength_v10)) {
                     p.writeInt32(p_cur->TD_SCDMA_SignalStrength.rscp);
                 } else {
                     p.writeInt32(INT_MAX);
